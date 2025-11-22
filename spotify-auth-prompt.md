@@ -1,65 +1,76 @@
-You are helping debug the Spotify OAuth token exchange for *Electric Slideshow*, a macOS SwiftUI app.
+You are helping debug Spotify OAuth + Web API integration for the macOS app Electric Slideshow.
 
-The app successfully receives the Spotify redirect callback, but the token exchange fails on the Swift side with:
+### Context
 
-```
-A server with the specified hostname could not be found.
-Failed URL: https://electric-slideshow-server.onrender.com/auth/spotify/token
-```
+- Front-end: macOS SwiftUI app (Electric Slideshow).
+- Backend: Node/Express app hosted on Render (this repo).
+- Spotify OAuth PKCE is handled by this backend. The macOS app calls this backend to:
+  - Exchange `code` for tokens.
+  - Fetch user profile.
+  - Fetch Spotify library / playlists.
 
-In the browser, loading the same URL returns:
+Current behavior:
 
-```
-{
-  "error": "not_found",
-  "details": "Route GET /auth/spotify/token does not exist"
-}
-```
+- The user initiates “Connect to Spotify” from the app.
+- Spotify consent page appears in the browser, user clicks “Agree”.
+- The app receives the callback via custom URL and shows “Connected to Spotify”.
+- In the Spotify account page on the web, **Electric Slideshow** appears under connected apps.
 
-This proves the server is reachable, so the issue may be:
+However:
 
-* Incorrect/mismatched route on the backend
-* Wrong HTTP verb (Swift may be calling POST, server only defines GET or vice versa)
-* Missing `/auth` prefix due to router nesting
-* Deprecated path from the old “slideshow-buddy-server” repo
-* Render environment variables using the old redirect URI or app name
-* PKCE token endpoint incorrectly copied during repo migration
+- When the app tries to create a new slideshow playlist from the user’s Spotify account/library, the modal shows: **“Failed to load Spotify Library”**.
+- When the app opens the profile modal (user icon), it shows: **“Failed to Load Profile”**.
+- These calls likely go through backend endpoints such as:
+  - Something like `/auth/spotify/token` for token exchange.
+  - Something like `/spotify/me` or `/api/spotify/profile` for profile.
+  - Something like `/spotify/playlists` or `/api/spotify/library` for the library/playlists.
 
-### **What I need you to check**
+Thus, OAuth appears to succeed superficially, but the subsequent backend API calls are failing.
 
-1. Search the entire backend for where the token exchange route is defined.
-   It should be a POST route:
+### What I need you to do in this Node repo
 
-   ```
-   POST /auth/spotify/token
-   ```
+1. Locate and inspect the route that handles the **code → token exchange**:
+   - Likely something like:
+     - `POST /auth/spotify/token`
+     - Or a similar route in an auth router.
+   - Check:
+     - Does it use the new Spotify app credentials (client ID, secret, redirect URI)?
+     - Is it using the correct `redirect_uri` (matching `com.electricslideshow://callback` or whichever is intended)?
+     - Are you properly sending `code_verifier` if using PKCE?
+     - What do you return to the client (Swift app) on success/failure?
 
-2. Verify the actual effective route path, considering:
+2. Locate the routes used for:
+   - Getting the **user profile** (the one that should back the “Load Profile” modal).
+   - Getting the **Spotify library / playlists** (used by the “Failed to load Spotify Library” modal).
 
-   * Router prefixing (`app.use('/auth', router)`)
-   * Any middleware that modifies base paths
+   These might be:
+   - `GET /spotify/me`
+   - `GET /spotify/profile`
+   - `GET /spotify/playlists`
+   - Or under `/api/spotify/...`
 
-3. Ensure the handler for the token exchange:
+3. For each of these routes:
+   - Confirm how the backend obtains the access/refresh token:
+     - Is it expecting the Swift app to send tokens in headers/body?
+     - Or is it using some server-side token/session store keyed by user?
+   - Confirm that it is using the **new** Spotify client/app, not leftover config from the old “slideshow-buddy” backend.
+   - Make sure the scopes requested at auth time are sufficient for:
+     - Reading user profile (e.g. `user-read-email`, `user-read-private`)
+     - Reading playlists/library (`playlist-read-private`, maybe `user-library-read`, etc.)
 
-   * Reads `code`, `code_verifier`, and `redirect_uri` correctly
-   * Does NOT validate redirect URI against old values from slideshow-buddy
-   * Uses the correct Spotify app credentials
+4. Improve logging and error handling:
+   - In the token exchange route, profile route, and library/playlist route:
+     - Log the full HTTP status and body of Spotify’s response if the call fails.
+     - Return an informative error payload to the Swift app (HTTP status + a JSON message) so the front-end can surface more than just “Failed to load …”.
+   - Make sure that if token exchange fails, the backend does NOT act as if everything is fine (and that the Swift app can detect this).
 
-4. Check all Render environment variables:
+5. Fix any of the following if found:
+   - Mismatched or incorrect redirect URI compared to what the Swift app and Spotify Developer Dashboard use.
+   - Wrong paths being hit internally (e.g. calling an old “slideshow-buddy” path, or hitting `/me` with no Authorization header).
+   - Using an outdated environment variable or Spotify client credentials that no longer match the new app.
 
-   * `SPOTIFY_CLIENT_ID`
-   * `SPOTIFY_CLIENT_SECRET`
-   * `SPOTIFY_REDIRECT_URI`
-     Should match: `com.electricslideshow://callback` (or the exact updated value)
-   * Ensure no old `slideshow-buddy` values remain
+Make minimal, focused changes. Do NOT refactor the architecture.  
 
-5. Confirm the backend doesn’t expect a route like:
-
-   * `/api/auth/spotify/token`
-   * `/spotify/token`
-   * `/auth/token`
-   * `/oauth/token`
-
-If the actual backend route does NOT match the expected endpoint `/auth/spotify/token`, please update the code so that the correct POST route exists and is wired up.
-
-When you're done, explain what you found and what fixes (if any) you applied.
+When you’re done, summarize:
+- What was misconfigured or broken in the token exchange or in the profile/library routes.
+- What code or config you changed to fix it.
