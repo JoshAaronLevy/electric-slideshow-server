@@ -155,6 +155,81 @@ POST /auth/spotify/refresh
 }
 ```
 
+### Get Current User Profile
+
+```
+GET /api/spotify/me
+```
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Success Response (200):**
+```json
+{
+  "id": "user_id",
+  "display_name": "User Name",
+  "email": "user@example.com",
+  "country": "US",
+  "product": "premium",
+  "images": [...],
+  ...
+}
+```
+
+**Error Response (401/403/500):**
+```json
+{
+  "error": "spotify_api_error",
+  "details": { ... }
+}
+```
+
+### Get Current User's Playlists
+
+```
+GET /api/spotify/playlists
+```
+
+**Headers:**
+```
+Authorization: Bearer <access_token>
+```
+
+**Query Parameters:**
+- `limit` (optional): Number of playlists to return (default: 50, max: 50)
+- `offset` (optional): Offset for pagination (default: 0)
+
+**Success Response (200):**
+```json
+{
+  "items": [
+    {
+      "id": "playlist_id",
+      "name": "Playlist Name",
+      "images": [...],
+      "tracks": { "total": 42 },
+      ...
+    }
+  ],
+  "total": 123,
+  "limit": 50,
+  "offset": 0,
+  "next": "...",
+  "previous": null
+}
+```
+
+**Error Response (401/403/500):**
+```json
+{
+  "error": "spotify_api_error",
+  "details": { ... }
+}
+```
+
 ## cURL Examples
 
 ### Exchange authorization code:
@@ -171,6 +246,20 @@ curl -X POST http://localhost:8080/auth/spotify/token \
 curl -X POST http://localhost:8080/auth/spotify/refresh \
   -H "Content-Type: application/json" \
   -d '{"refresh_token":"<YOUR_REFRESH_TOKEN>"}'
+```
+
+### Get user profile:
+
+```bash
+curl -X GET http://localhost:8080/api/spotify/me \
+  -H "Authorization: Bearer <YOUR_ACCESS_TOKEN>"
+```
+
+### Get user playlists:
+
+```bash
+curl -X GET "http://localhost:8080/api/spotify/playlists?limit=20&offset=0" \
+  -H "Authorization: Bearer <YOUR_ACCESS_TOKEN>"
 ```
 
 ## Docker

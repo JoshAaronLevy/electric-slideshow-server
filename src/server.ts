@@ -166,6 +166,55 @@ const refreshRequestSchema = z.object({
   refresh_token: z.string().min(1, 'refresh_token is required'),
 });
 
+// Middleware to validate Authorization header and extract bearer token
+function requireBearerToken(req: Request, res: Response, next: NextFunction) {
+  const correlationId = (req as any).correlationId;
+  const authHeader = req.headers.authorization;
+  
+  if (!authHeader) {
+    console.warn('[SpotifyAPI] Missing Authorization header', {
+      correlationId,
+      path: req.path,
+      method: req.method,
+    });
+    return res.status(401).json({
+      error: 'unauthorized',
+      details: 'Missing Authorization header. Expected: Authorization: Bearer <access_token>',
+    });
+  }
+  
+  const parts = authHeader.split(' ');
+  if (parts.length !== 2 || parts[0] !== 'Bearer') {
+    console.warn('[SpotifyAPI] Invalid Authorization header format', {
+      correlationId,
+      path: req.path,
+      method: req.method,
+      authHeaderPrefix: authHeader.substring(0, 20),
+    });
+    return res.status(401).json({
+      error: 'unauthorized',
+      details: 'Invalid Authorization header format. Expected: Authorization: Bearer <access_token>',
+    });
+  }
+  
+  const token = parts[1];
+  if (!token || token.length < 10) {
+    console.warn('[SpotifyAPI] Invalid or empty access token', {
+      correlationId,
+      path: req.path,
+      method: req.method,
+    });
+    return res.status(401).json({
+      error: 'unauthorized',
+      details: 'Invalid or empty access token',
+    });
+  }
+  
+  // Attach token to request for use in handlers
+  (req as any).accessToken = token;
+  next();
+}
+
 // POST /auth/spotify/token - Exchange authorization code for tokens (PKCE)
 app.post('/auth/spotify/token', authRateLimiter, async (req: Request, res: Response) => {
   const correlationId = (req as any).correlationId;
@@ -343,6 +392,123 @@ app.post('/auth/spotify/refresh', authRateLimiter, async (req: Request, res: Res
 
     res.status(status).json({
       error: 'spotify_refresh_failed',
+      details,
+    });
+  }
+});
+
+// GET /api/spotify/me - Get current user's Spotify profile
+app.get('/api/spotify/me', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  
+  try {
+    console.log('[SpotifyAPI] Fetching user profile', {
+      correlationId,
+      hasToken: !!accessToken,
+      tokenPreview: accessToken ? `${accessToken.substring(0, 10)}...` : undefined,
+      origin: req.headers.origin,
+      userAgent: req.headers['user-agent'],
+      ip: req.ip,
+    });
+    
+    const response = await axios.get('https://api.spotify.com/v1/me', {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+    
+    console.log('[SpotifyAPI] User profile fetched successfully', {
+      correlationId,
+      userId: response.data.id,
+      displayName: response.data.display_name,
+      email: response.data.email,
+      country: response.data.country,
+      product: response.data.product,
+    });
+    
+    res.json(response.data);
+  } catch (error: any) {
+    console.error('[SpotifyAPI] Failed to fetch user profile', {
+      correlationId,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      error: error.response?.data?.error,
+      errorMessage: error.response?.data?.error?.message,
+      errorReason: error.response?.data?.error?.reason,
+      message: error.message,
+      fullResponse: error.response?.data,
+    });
+    
+    const status = error.response?.status || 500;
+    const details = error.response?.data || { message: error.message };
+    
+    res.status(status).json({
+      error: 'spotify_api_error',
+      details,
+    });
+  }
+});
+
+// GET /api/spotify/playlists - Get current user's playlists
+app.get('/api/spotify/playlists', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  
+  try {
+    // Parse query parameters for pagination
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 50); // Max 50 per Spotify API
+    const offset = parseInt(req.query.offset as string) || 0;
+    
+    console.log('[SpotifyAPI] Fetching user playlists', {
+      correlationId,
+      hasToken: !!accessToken,
+      tokenPreview: accessToken ? `${accessToken.substring(0, 10)}...` : undefined,
+      limit,
+      offset,
+      origin: req.headers.origin,
+      userAgent: req.headers['user-agent'],
+      ip: req.ip,
+    });
+    
+    const response = await axios.get('https://api.spotify.com/v1/me/playlists', {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+      params: {
+        limit,
+        offset,
+      },
+    });
+    
+    console.log('[SpotifyAPI] User playlists fetched successfully', {
+      correlationId,
+      total: response.data.total,
+      itemsCount: response.data.items?.length || 0,
+      limit: response.data.limit,
+      offset: response.data.offset,
+      next: !!response.data.next,
+      previous: !!response.data.previous,
+    });
+    
+    res.json(response.data);
+  } catch (error: any) {
+    console.error('[SpotifyAPI] Failed to fetch user playlists', {
+      correlationId,
+      status: error.response?.status,
+      statusText: error.response?.statusText,
+      error: error.response?.data?.error,
+      errorMessage: error.response?.data?.error?.message,
+      errorReason: error.response?.data?.error?.reason,
+      message: error.message,
+      fullResponse: error.response?.data,
+    });
+    
+    const status = error.response?.status || 500;
+    const details = error.response?.data || { message: error.message };
+    
+    res.status(status).json({
+      error: 'spotify_api_error',
       details,
     });
   }
