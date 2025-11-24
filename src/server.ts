@@ -454,6 +454,270 @@ app.get('/api/spotify/playlists', authRateLimiter, requireBearerToken, async (re
   }
 });
 
+// GET /api/spotify/devices - Get available Spotify devices
+app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  
+  console.log('[SpotifyAPI] Devices request received', {
+    correlationId,
+    path: req.path,
+    method: req.method,
+    origin: req.headers.origin,
+    userAgent: req.headers['user-agent'],
+    ip: req.ip,
+  });
+  
+  try {
+    const response = await axios.get('https://api.spotify.com/v1/me/player/devices', {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+    
+    console.log('[SpotifyAPI] Devices request successful', {
+      correlationId,
+      status: response.status,
+      deviceCount: response.data.devices?.length || 0,
+    });
+    
+    // Return devices array, empty if no devices found
+    res.json({ devices: response.data.devices || [] });
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    const details = error.response?.data || { message: error.message };
+    
+    console.error('[SpotifyAPI] Devices request failed', {
+      correlationId,
+      status,
+      statusText: error.response?.statusText,
+      error: error.response?.data?.error,
+      errorDescription: error.response?.data?.error_description,
+      message: error.message,
+      fullResponse: error.response?.data,
+    });
+    
+    // Handle specific Spotify API error cases
+    if (status === 401) {
+      return res.status(401).json({
+        error: 'unauthorized',
+        details: 'Spotify token is invalid or expired.',
+      });
+    }
+    
+    if (status === 403) {
+      return res.status(403).json({
+        error: 'forbidden',
+        details: 'Insufficient permissions to access Spotify devices.',
+      });
+    }
+    
+    if (status === 429) {
+      return res.status(429).json({
+        error: 'rate_limited',
+        details: 'Spotify API rate limit exceeded. Please try again later.',
+      });
+    }
+    
+    // Generic error response for other cases
+    res.status(status).json({
+      error: 'spotify_api_error',
+      details: details.error?.message || details.message || 'Failed to fetch Spotify devices.',
+    });
+  }
+});
+
+// PUT /api/spotify/playback/start/:playlistId - Start playback on available device
+app.put('/api/spotify/playback/start/:playlistId', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  const { playlistId } = req.params;
+  
+  console.log('[SpotifyAPI] Start playback request received', {
+    correlationId,
+    path: req.path,
+    method: req.method,
+    playlistId,
+    origin: req.headers.origin,
+    userAgent: req.headers['user-agent'],
+    ip: req.ip,
+  });
+  
+  try {
+    // Step 1: Get available devices
+    console.log('[SpotifyAPI] Fetching available devices', { correlationId });
+    const devicesResponse = await axios.get('https://api.spotify.com/v1/me/player/devices', {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+    
+    const devices = devicesResponse.data.devices || [];
+    console.log('[SpotifyAPI] Devices fetched successfully', {
+      correlationId,
+      deviceCount: devices.length,
+      devices: devices.map((d: any) => ({
+        id: d.id,
+        name: d.name,
+        type: d.type,
+        is_active: d.is_active,
+        is_restricted: d.is_restricted,
+      })),
+    });
+    
+    // Step 2: Handle NO_ACTIVE_DEVICE scenario
+    if (devices.length === 0) {
+      console.log('[SpotifyAPI] No devices found', { correlationId });
+      return res.status(409).json({
+        ok: false,
+        code: 'NO_ACTIVE_DEVICE',
+        message: 'No active Spotify devices. Please open Spotify on one of your devices and start playing something once, then try again.',
+      });
+    }
+    
+    // Step 3: Select target device using the specified strategy
+    let targetDevice = null;
+    
+    // Prefer device with is_active === true
+    const activeDevice = devices.find((d: any) => d.is_active === true);
+    if (activeDevice) {
+      targetDevice = activeDevice;
+      console.log('[SpotifyAPI] Selected active device', {
+        correlationId,
+        deviceId: targetDevice.id,
+        deviceName: targetDevice.name,
+        deviceType: targetDevice.type,
+      });
+    } else {
+      // Fall back to first device of type "Computer"
+      const computerDevice = devices.find((d: any) => d.type === 'Computer');
+      if (computerDevice) {
+        targetDevice = computerDevice;
+        console.log('[SpotifyAPI] Selected computer device (no active device found)', {
+          correlationId,
+          deviceId: targetDevice.id,
+          deviceName: targetDevice.name,
+          deviceType: targetDevice.type,
+        });
+      } else {
+        // Use first device in array as final fallback
+        targetDevice = devices[0];
+        console.log('[SpotifyAPI] Selected first available device (no active or computer device found)', {
+          correlationId,
+          deviceId: targetDevice.id,
+          deviceName: targetDevice.name,
+          deviceType: targetDevice.type,
+        });
+      }
+    }
+    
+    // Step 4: Start playback on selected device
+    console.log('[SpotifyAPI] Starting playback on selected device', {
+      correlationId,
+      deviceId: targetDevice.id,
+      playlistId,
+      contextUri: `spotify:playlist:${playlistId}`,
+    });
+    
+    const playResponse = await axios.put(
+      `https://api.spotify.com/v1/me/player/play?device_id=${targetDevice.id}`,
+      {
+        context_uri: `spotify:playlist:${playlistId}`,
+        position_ms: 0,
+      },
+      {
+        headers: { 'Authorization': `Bearer ${accessToken}` },
+      }
+    );
+    
+    console.log('[SpotifyAPI] Playback started successfully', {
+      correlationId,
+      status: playResponse.status,
+      deviceId: targetDevice.id,
+      deviceName: targetDevice.name,
+      playlistId,
+    });
+    
+    // Step 5: Return success response
+    res.json({
+      ok: true,
+      message: 'Playback started successfully',
+      device: {
+        id: targetDevice.id,
+        name: targetDevice.name,
+        type: targetDevice.type,
+        is_active: targetDevice.is_active,
+      },
+      playlistId,
+    });
+    
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    const details = error.response?.data || { message: error.message };
+    
+    console.error('[SpotifyAPI] Start playback failed', {
+      correlationId,
+      status,
+      statusText: error.response?.statusText,
+      error: error.response?.data?.error,
+      errorDescription: error.response?.data?.error_description,
+      message: error.message,
+      fullResponse: error.response?.data,
+    });
+    
+    // Handle specific Spotify API error cases
+    if (status === 401) {
+      return res.status(401).json({
+        ok: false,
+        code: 'UNAUTHORIZED',
+        message: 'Spotify token is invalid or expired.',
+        details,
+      });
+    }
+    
+    if (status === 403) {
+      return res.status(403).json({
+        ok: false,
+        code: 'FORBIDDEN',
+        message: 'Insufficient permissions to control playback.',
+        details,
+      });
+    }
+    
+    if (status === 404) {
+      return res.status(404).json({
+        ok: false,
+        code: 'DEVICE_NOT_FOUND',
+        message: 'The selected device is no longer available.',
+        details,
+      });
+    }
+    
+    if (status === 429) {
+      return res.status(429).json({
+        ok: false,
+        code: 'RATE_LIMITED',
+        message: 'Spotify API rate limit exceeded. Please try again later.',
+        details,
+      });
+    }
+    
+    // Handle specific playback errors
+    if (status === 404 && error.response?.data?.error?.reason === 'NO_ACTIVE_DEVICE') {
+      return res.status(409).json({
+        ok: false,
+        code: 'NO_ACTIVE_DEVICE',
+        message: 'No active Spotify devices. Please open Spotify on one of your devices and start playing something once, then try again.',
+        details,
+      });
+    }
+    
+    // Generic error response for other cases
+    res.status(status).json({
+      ok: false,
+      code: 'UNEXPECTED_ERROR',
+      message: 'Failed to start playback.',
+      details,
+    });
+  }
+});
+
 // 404 handler - must come before global error handler
 app.use((req: Request, res: Response, _next: NextFunction) => {
   const correlationId = (req as any).correlationId;
