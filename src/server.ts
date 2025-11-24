@@ -1,3 +1,113 @@
+// POST /api/spotify/playback/stop - Pause playback
+app.post('/api/spotify/playback/stop', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  try {
+    await axios.put('https://api.spotify.com/v1/me/player/pause', {}, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+    return res.status(204).json({ ok: true });
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    const reason = error.response?.data?.error?.reason;
+    // NO_ACTIVE_DEVICE: treat as no-op
+    if (status === 404 && reason === 'NO_ACTIVE_DEVICE') {
+      return res.status(204).json({ ok: true });
+    }
+    // Other errors
+    return res.status(status).json({
+      ok: false,
+      code: 'UNEXPECTED_ERROR',
+      message: 'Failed to stop playback.',
+      details: error.response?.data || { message: error.message }
+    });
+  }
+});
+// POST /api/spotify/playback/start/:playlistId - Start playback of a playlist
+app.post('/api/spotify/playback/start/:playlistId', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  const playlistId = req.params.playlistId;
+  try {
+    // 1. Get devices
+    const devicesResp = await axios.get('https://api.spotify.com/v1/me/player/devices', {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+    const devices = devicesResp.data.devices || [];
+    if (!devices.length) {
+      return res.status(409).json({
+        ok: false,
+        code: 'NO_ACTIVE_DEVICE',
+        message: 'No active Spotify devices. Please open Spotify on one of your devices and start playing something once, then try again.',
+        details: { devices: [] }
+      });
+    }
+    // 2. Pick device: prefer active, else first Computer, else first
+    let chosen = devices.find(d => d.is_active) || devices.find(d => d.type === 'Computer') || devices[0];
+    // 3. Start playback
+    const playBody = {
+      context_uri: `spotify:playlist:${playlistId}`
+    };
+    try {
+      await axios.put(`https://api.spotify.com/v1/me/player/play?device_id=${chosen.id}`,
+        playBody,
+        { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      );
+      return res.json({ ok: true, device: chosen });
+    } catch (err: any) {
+      // Handle NO_ACTIVE_DEVICE error from Spotify
+      const status = err.response?.status || 500;
+      const reason = err.response?.data?.error?.reason;
+      if (status === 404 && reason === 'NO_ACTIVE_DEVICE') {
+        return res.status(409).json({
+          ok: false,
+          code: 'NO_ACTIVE_DEVICE',
+          message: 'No active Spotify devices. Please open Spotify and start playing something once, then try again.',
+          details: { devices }
+        });
+      }
+      // Other errors
+      return res.status(status).json({
+        ok: false,
+        code: 'UNEXPECTED_ERROR',
+        message: 'Failed to start playback.',
+        details: err.response?.data || { message: err.message }
+      });
+    }
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    return res.status(status).json({
+      ok: false,
+      code: 'UNEXPECTED_ERROR',
+      message: 'Failed to start playback.',
+      details: error.response?.data || { message: error.message }
+    });
+  }
+});
+// GET /api/spotify/devices - List user's Spotify devices
+app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  try {
+    const response = await axios.get('https://api.spotify.com/v1/me/player/devices', {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+    const devices = response.data.devices || [];
+    res.json({ ok: true, devices });
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    const details = error.response?.data || { message: error.message };
+    let code = 'UNEXPECTED_ERROR';
+    let message = 'Something went wrong talking to Spotify.';
+    if (status === 401) {
+      code = 'UNAUTHORIZED';
+      message = 'Spotify token is invalid or expired.';
+    }
+    res.status(status).json({ ok: false, code, message, details });
+  }
+});
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -135,6 +245,15 @@ const authRateLimiter = rateLimit({
   },
 });
 
+// Required Spotify scopes for playback and device control
+const SPOTIFY_SCOPES = [
+  'user-read-playback-state',
+  'user-modify-playback-state',
+  'user-read-currently-playing',
+  'playlist-read-private',
+  'playlist-read-collaborative',
+];
+
 // Helper function to call Spotify token endpoint
 async function spotifyToken(params: URLSearchParams): Promise<any> {
   const response = await axios.post(
@@ -216,6 +335,7 @@ function requireBearerToken(req: Request, res: Response, next: NextFunction) {
 }
 
 // POST /auth/spotify/token - Exchange authorization code for tokens (PKCE)
+// Also used to build the authorize URL for frontend
 app.post('/auth/spotify/token', authRateLimiter, async (req: Request, res: Response) => {
   const correlationId = (req as any).correlationId;
   
@@ -258,6 +378,7 @@ app.post('/auth/spotify/token', authRateLimiter, async (req: Request, res: Respo
       redirect_uri: SPOTIFY_REDIRECT_URI,
       client_id: SPOTIFY_CLIENT_ID,
       code_verifier: validatedCodeVerifier,
+      scope: SPOTIFY_SCOPES.join(' '),
     });
 
     console.log('[SpotifyAuth] Calling Spotify token API', {
@@ -347,6 +468,7 @@ app.post('/auth/spotify/refresh', authRateLimiter, async (req: Request, res: Res
       grant_type: 'refresh_token',
       refresh_token: validatedRefreshToken,
       client_id: SPOTIFY_CLIENT_ID,
+      scope: SPOTIFY_SCOPES.join(' '),
     });
 
     console.log('[SpotifyAuth] Calling Spotify refresh API', {
@@ -401,52 +523,20 @@ app.post('/auth/spotify/refresh', authRateLimiter, async (req: Request, res: Res
 app.get('/api/spotify/me', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
   const correlationId = (req as any).correlationId;
   const accessToken = (req as any).accessToken;
-  
   try {
-    console.log('[SpotifyAPI] Fetching user profile', {
-      correlationId,
-      hasToken: !!accessToken,
-      tokenPreview: accessToken ? `${accessToken.substring(0, 10)}...` : undefined,
-      origin: req.headers.origin,
-      userAgent: req.headers['user-agent'],
-      ip: req.ip,
-    });
-    
     const response = await axios.get('https://api.spotify.com/v1/me', {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-      },
+      headers: { 'Authorization': `Bearer ${accessToken}` },
     });
-    
-    console.log('[SpotifyAPI] User profile fetched successfully', {
-      correlationId,
-      userId: response.data.id,
-      displayName: response.data.display_name,
-      email: response.data.email,
-      country: response.data.country,
-      product: response.data.product,
-    });
-    
-    res.json(response.data);
+    res.json({ ok: true, profile: response.data });
   } catch (error: any) {
-    console.error('[SpotifyAPI] Failed to fetch user profile', {
-      correlationId,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      error: error.response?.data?.error,
-      errorMessage: error.response?.data?.error?.message,
-      errorReason: error.response?.data?.error?.reason,
-      message: error.message,
-      fullResponse: error.response?.data,
-    });
-    
     const status = error.response?.status || 500;
-    const details = error.response?.data || { message: error.message };
-    
-    res.status(status).json({
-      error: 'spotify_api_error',
-      details,
-    });
+    let code = 'UNEXPECTED_ERROR';
+    let message = 'Failed to fetch Spotify profile.';
+    if (status === 401) {
+      code = 'UNAUTHORIZED';
+      message = 'Spotify token is invalid or expired.';
+    }
+    res.status(status).json({ ok: false, code, message, details: error.response?.data || { message: error.message } });
   }
 });
 
@@ -454,63 +544,23 @@ app.get('/api/spotify/me', authRateLimiter, requireBearerToken, async (req: Requ
 app.get('/api/spotify/playlists', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
   const correlationId = (req as any).correlationId;
   const accessToken = (req as any).accessToken;
-  
   try {
-    // Parse query parameters for pagination
-    const limit = Math.min(parseInt(req.query.limit as string) || 50, 50); // Max 50 per Spotify API
+    const limit = Math.min(parseInt(req.query.limit as string) || 50, 50);
     const offset = parseInt(req.query.offset as string) || 0;
-    
-    console.log('[SpotifyAPI] Fetching user playlists', {
-      correlationId,
-      hasToken: !!accessToken,
-      tokenPreview: accessToken ? `${accessToken.substring(0, 10)}...` : undefined,
-      limit,
-      offset,
-      origin: req.headers.origin,
-      userAgent: req.headers['user-agent'],
-      ip: req.ip,
-    });
-    
     const response = await axios.get('https://api.spotify.com/v1/me/playlists', {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-      },
-      params: {
-        limit,
-        offset,
-      },
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+      params: { limit, offset },
     });
-    
-    console.log('[SpotifyAPI] User playlists fetched successfully', {
-      correlationId,
-      total: response.data.total,
-      itemsCount: response.data.items?.length || 0,
-      limit: response.data.limit,
-      offset: response.data.offset,
-      next: !!response.data.next,
-      previous: !!response.data.previous,
-    });
-    
-    res.json(response.data);
+    res.json({ ok: true, playlists: response.data });
   } catch (error: any) {
-    console.error('[SpotifyAPI] Failed to fetch user playlists', {
-      correlationId,
-      status: error.response?.status,
-      statusText: error.response?.statusText,
-      error: error.response?.data?.error,
-      errorMessage: error.response?.data?.error?.message,
-      errorReason: error.response?.data?.error?.reason,
-      message: error.message,
-      fullResponse: error.response?.data,
-    });
-    
     const status = error.response?.status || 500;
-    const details = error.response?.data || { message: error.message };
-    
-    res.status(status).json({
-      error: 'spotify_api_error',
-      details,
-    });
+    let code = 'UNEXPECTED_ERROR';
+    let message = 'Failed to fetch Spotify playlists.';
+    if (status === 401) {
+      code = 'UNAUTHORIZED';
+      message = 'Spotify token is invalid or expired.';
+    }
+    res.status(status).json({ ok: false, code, message, details: error.response?.data || { message: error.message } });
   }
 });
 
