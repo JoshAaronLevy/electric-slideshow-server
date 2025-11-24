@@ -224,6 +224,59 @@ function requireBearerToken(req: Request, res: Response, next: NextFunction) {
   next();
 }
 
+// Middleware to validate required Spotify scopes for device access
+function validateDeviceScopes(req: Request, res: Response, next: NextFunction) {
+  const correlationId = (req as any).correlationId;
+  const userScopes = (req as any).user?.scopes || [];
+  
+  console.log('[SpotifyAPI] Validating device scopes', {
+    correlationId,
+    path: req.path,
+    method: req.method,
+    userScopes,
+  });
+  
+  // Required scopes for device access
+  const requiredScopes = [
+    'user-read-playback-state',
+    'user-modify-playback-state',
+  ];
+  
+  // Check if all required scopes are present
+  const missingScopes = requiredScopes.filter(scope => !userScopes.includes(scope));
+  
+  if (missingScopes.length > 0) {
+    console.warn('[SpotifyAPI] Insufficient scopes for device access', {
+      correlationId,
+      path: req.path,
+      method: req.method,
+      requiredScopes,
+      userScopes,
+      missingScopes,
+    });
+    
+    return res.status(403).json({
+      success: false,
+      error: {
+        code: 'INSUFFICIENT_SCOPES',
+        message: 'Missing required scopes for device access',
+        required: requiredScopes,
+        available: userScopes,
+      },
+      timestamp: new Date().toISOString(),
+    });
+  }
+  
+  console.log('[SpotifyAPI] Scope validation passed', {
+    correlationId,
+    path: req.path,
+    method: req.method,
+    userScopes,
+  });
+  
+  next();
+}
+
 // POST /auth/spotify/token - Exchange authorization code for tokens (PKCE)
 // Also used to build the authorize URL for frontend
 app.post('/auth/spotify/token', authRateLimiter, async (req: Request, res: Response) => {
@@ -353,31 +406,87 @@ app.post('/auth/spotify/refresh', authRateLimiter, async (req: Request, res: Res
 
     const { refresh_token: validatedRefreshToken } = validationResult.data;
 
+    // Define required scopes for device access
+    const requiredDeviceScopes = ['user-read-playback-state', 'user-modify-playback-state'];
+    const expectedScopes = SPOTIFY_SCOPES.join(' ');
+
+    console.log('[SpotifyAuth] Preparing refresh request with scope validation', {
+      correlationId,
+      expectedScopes,
+      requiredDeviceScopes,
+      allExpectedScopes: SPOTIFY_SCOPES,
+    });
+
     // Build Spotify refresh request params
     const params = new URLSearchParams({
       grant_type: 'refresh_token',
       refresh_token: validatedRefreshToken,
       client_id: SPOTIFY_CLIENT_ID,
-      scope: SPOTIFY_SCOPES.join(' '),
+      scope: expectedScopes,
     });
 
     console.log('[SpotifyAuth] Calling Spotify refresh API', {
       correlationId,
       grantType: 'refresh_token',
       clientId: `${SPOTIFY_CLIENT_ID.substring(0, 8)}...`,
+      requestedScopes: expectedScopes,
     });
 
     // Refresh token
     const tokenData = await spotifyToken(params);
 
-    console.log('[SpotifyAuth] Token refresh successful', {
+    console.log('[SpotifyAuth] Token refresh response received', {
       correlationId,
       hasAccessToken: !!tokenData.access_token,
       hasNewRefreshToken: !!tokenData.refresh_token,
       willPreserveOldRefreshToken: !tokenData.refresh_token,
       tokenType: tokenData.token_type,
       expiresIn: tokenData.expires_in,
-      scope: tokenData.scope,
+      returnedScope: tokenData.scope,
+    });
+
+    // Validate returned scopes
+    const returnedScopes = tokenData.scope ? tokenData.scope.split(' ') : [];
+    const hasRequiredDeviceScopes = requiredDeviceScopes.every(scope =>
+      returnedScopes.includes(scope)
+    );
+    const scopePreservationStatus = tokenData.scope === expectedScopes ? 'preserved' : 'modified';
+
+    console.log('[SpotifyAuth] Scope validation results', {
+      correlationId,
+      expectedScopes,
+      returnedScopes: tokenData.scope,
+      scopePreservationStatus,
+      hasRequiredDeviceScopes,
+      missingDeviceScopes: requiredDeviceScopes.filter(scope => !returnedScopes.includes(scope)),
+      extraScopes: returnedScopes.filter((scope: string) => !SPOTIFY_SCOPES.includes(scope)),
+    });
+
+    // Validate that required device access scopes are present
+    if (!hasRequiredDeviceScopes) {
+      console.error('[SpotifyAuth] Scope validation failed - missing required device scopes', {
+        correlationId,
+        requiredDeviceScopes,
+        returnedScopes,
+        missingScopes: requiredDeviceScopes.filter(scope => !returnedScopes.includes(scope)),
+      });
+
+      return res.status(400).json({
+        error: 'spotify_scope_validation_failed',
+        details: {
+          message: 'Refreshed token missing required device access scopes',
+          required: requiredDeviceScopes,
+          returned: returnedScopes,
+          missing: requiredDeviceScopes.filter(scope => !returnedScopes.includes(scope)),
+        },
+      });
+    }
+
+    console.log('[SpotifyAuth] Token refresh successful with scope validation', {
+      correlationId,
+      scopePreservationStatus,
+      hasRequiredDeviceScopes,
+      finalRefreshToken: tokenData.refresh_token ? 'new_token' : 'preserved_token',
     });
 
     // Return token response (preserve old refresh_token if Spotify doesn't send a new one)
@@ -455,7 +564,7 @@ app.get('/api/spotify/playlists', authRateLimiter, requireBearerToken, async (re
 });
 
 // GET /api/spotify/devices - Get available Spotify devices
-app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, validateDeviceScopes, async (req: Request, res: Response) => {
   const correlationId = (req as any).correlationId;
   const accessToken = (req as any).accessToken;
   
@@ -471,6 +580,7 @@ app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req:
   try {
     const response = await axios.get('https://api.spotify.com/v1/me/player/devices', {
       headers: { 'Authorization': `Bearer ${accessToken}` },
+      timeout: 30000, // 30 second timeout
     });
     
     console.log('[SpotifyAPI] Devices request successful', {
@@ -479,11 +589,18 @@ app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req:
       deviceCount: response.data.devices?.length || 0,
     });
     
-    // Return devices array, empty if no devices found
-    res.json({ devices: response.data.devices || [] });
+    // Return standardized success response
+    res.json({
+      success: true,
+      data: {
+        devices: response.data.devices || []
+      },
+      timestamp: new Date().toISOString()
+    });
   } catch (error: any) {
     const status = error.response?.status || 500;
     const details = error.response?.data || { message: error.message };
+    const timestamp = new Date().toISOString();
     
     console.error('[SpotifyAPI] Devices request failed', {
       correlationId,
@@ -495,32 +612,69 @@ app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req:
       fullResponse: error.response?.data,
     });
     
-    // Handle specific Spotify API error cases
+    // Handle specific Spotify API error cases with standardized format
     if (status === 401) {
       return res.status(401).json({
-        error: 'unauthorized',
-        details: 'Spotify token is invalid or expired.',
+        success: false,
+        error: {
+          code: 'UNAUTHORIZED',
+          message: 'Failed to fetch Spotify devices',
+          details: 'Spotify token is invalid or expired.',
+          status: 401
+        },
+        timestamp
       });
     }
     
     if (status === 403) {
       return res.status(403).json({
-        error: 'forbidden',
-        details: 'Insufficient permissions to access Spotify devices.',
+        success: false,
+        error: {
+          code: 'FORBIDDEN',
+          message: 'Failed to fetch Spotify devices',
+          details: 'Insufficient permissions to access Spotify devices.',
+          status: 403
+        },
+        timestamp
       });
     }
     
     if (status === 429) {
       return res.status(429).json({
-        error: 'rate_limited',
-        details: 'Spotify API rate limit exceeded. Please try again later.',
+        success: false,
+        error: {
+          code: 'RATE_LIMITED',
+          message: 'Failed to fetch Spotify devices',
+          details: 'Spotify API rate limit exceeded. Please try again later.',
+          status: 429
+        },
+        timestamp
+      });
+    }
+    
+    if (error.code === 'ECONNABORTED' || error.code === 'ETIMEDOUT') {
+      return res.status(408).json({
+        success: false,
+        error: {
+          code: 'REQUEST_TIMEOUT',
+          message: 'Failed to fetch Spotify devices',
+          details: 'Request to Spotify API timed out.',
+          status: 408
+        },
+        timestamp
       });
     }
     
     // Generic error response for other cases
     res.status(status).json({
-      error: 'spotify_api_error',
-      details: details.error?.message || details.message || 'Failed to fetch Spotify devices.',
+      success: false,
+      error: {
+        code: 'DEVICE_FETCH_FAILED',
+        message: 'Failed to fetch Spotify devices',
+        details: details.error?.message || details.message || 'An unexpected error occurred.',
+        status
+      },
+      timestamp
     });
   }
 });
