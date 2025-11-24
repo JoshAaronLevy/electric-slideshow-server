@@ -1,113 +1,3 @@
-// POST /api/spotify/playback/stop - Pause playback
-app.post('/api/spotify/playback/stop', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
-  const correlationId = (req as any).correlationId;
-  const accessToken = (req as any).accessToken;
-  try {
-    await axios.put('https://api.spotify.com/v1/me/player/pause', {}, {
-      headers: { 'Authorization': `Bearer ${accessToken}` }
-    });
-    return res.status(204).json({ ok: true });
-  } catch (error: any) {
-    const status = error.response?.status || 500;
-    const reason = error.response?.data?.error?.reason;
-    // NO_ACTIVE_DEVICE: treat as no-op
-    if (status === 404 && reason === 'NO_ACTIVE_DEVICE') {
-      return res.status(204).json({ ok: true });
-    }
-    // Other errors
-    return res.status(status).json({
-      ok: false,
-      code: 'UNEXPECTED_ERROR',
-      message: 'Failed to stop playback.',
-      details: error.response?.data || { message: error.message }
-    });
-  }
-});
-// POST /api/spotify/playback/start/:playlistId - Start playback of a playlist
-app.post('/api/spotify/playback/start/:playlistId', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
-  const correlationId = (req as any).correlationId;
-  const accessToken = (req as any).accessToken;
-  const playlistId = req.params.playlistId;
-  try {
-    // 1. Get devices
-    const devicesResp = await axios.get('https://api.spotify.com/v1/me/player/devices', {
-      headers: { 'Authorization': `Bearer ${accessToken}` },
-    });
-    const devices = devicesResp.data.devices || [];
-    if (!devices.length) {
-      return res.status(409).json({
-        ok: false,
-        code: 'NO_ACTIVE_DEVICE',
-        message: 'No active Spotify devices. Please open Spotify on one of your devices and start playing something once, then try again.',
-        details: { devices: [] }
-      });
-    }
-    // 2. Pick device: prefer active, else first Computer, else first
-    let chosen = devices.find(d => d.is_active) || devices.find(d => d.type === 'Computer') || devices[0];
-    // 3. Start playback
-    const playBody = {
-      context_uri: `spotify:playlist:${playlistId}`
-    };
-    try {
-      await axios.put(`https://api.spotify.com/v1/me/player/play?device_id=${chosen.id}`,
-        playBody,
-        { headers: { 'Authorization': `Bearer ${accessToken}` } }
-      );
-      return res.json({ ok: true, device: chosen });
-    } catch (err: any) {
-      // Handle NO_ACTIVE_DEVICE error from Spotify
-      const status = err.response?.status || 500;
-      const reason = err.response?.data?.error?.reason;
-      if (status === 404 && reason === 'NO_ACTIVE_DEVICE') {
-        return res.status(409).json({
-          ok: false,
-          code: 'NO_ACTIVE_DEVICE',
-          message: 'No active Spotify devices. Please open Spotify and start playing something once, then try again.',
-          details: { devices }
-        });
-      }
-      // Other errors
-      return res.status(status).json({
-        ok: false,
-        code: 'UNEXPECTED_ERROR',
-        message: 'Failed to start playback.',
-        details: err.response?.data || { message: err.message }
-      });
-    }
-  } catch (error: any) {
-    const status = error.response?.status || 500;
-    return res.status(status).json({
-      ok: false,
-      code: 'UNEXPECTED_ERROR',
-      message: 'Failed to start playback.',
-      details: error.response?.data || { message: error.message }
-    });
-  }
-});
-// GET /api/spotify/devices - List user's Spotify devices
-app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
-  const correlationId = (req as any).correlationId;
-  const accessToken = (req as any).accessToken;
-  try {
-    const response = await axios.get('https://api.spotify.com/v1/me/player/devices', {
-      headers: {
-        'Authorization': `Bearer ${accessToken}`,
-      },
-    });
-    const devices = response.data.devices || [];
-    res.json({ ok: true, devices });
-  } catch (error: any) {
-    const status = error.response?.status || 500;
-    const details = error.response?.data || { message: error.message };
-    let code = 'UNEXPECTED_ERROR';
-    let message = 'Something went wrong talking to Spotify.';
-    if (status === 401) {
-      code = 'UNAUTHORIZED';
-      message = 'Spotify token is invalid or expired.';
-    }
-    res.status(status).json({ ok: false, code, message, details });
-  }
-});
 import 'dotenv/config';
 import express, { Request, Response, NextFunction } from 'express';
 import cors from 'cors';
@@ -597,6 +487,117 @@ app.use((error: Error, req: Request, res: Response, _next: NextFunction) => {
     error: 'internal_error',
     details: process.env.NODE_ENV !== 'production' ? error.message : 'An unexpected error occurred',
   });
+});
+
+// POST /api/spotify/playback/stop - Pause playback
+app.post('/api/spotify/playback/stop', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  try {
+    await axios.put('https://api.spotify.com/v1/me/player/pause', {}, {
+      headers: { 'Authorization': `Bearer ${accessToken}` }
+    });
+    return res.status(204).json({ ok: true });
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    const reason = error.response?.data?.error?.reason;
+    // NO_ACTIVE_DEVICE: treat as no-op
+    if (status === 404 && reason === 'NO_ACTIVE_DEVICE') {
+      return res.status(204).json({ ok: true });
+    }
+    // Other errors
+    return res.status(status).json({
+      ok: false,
+      code: 'UNEXPECTED_ERROR',
+      message: 'Failed to stop playback.',
+      details: error.response?.data || { message: error.message }
+    });
+  }
+});
+// POST /api/spotify/playback/start/:playlistId - Start playback of a playlist
+app.post('/api/spotify/playback/start/:playlistId', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  const playlistId = req.params.playlistId;
+  try {
+    // 1. Get devices
+    const devicesResp = await axios.get('https://api.spotify.com/v1/me/player/devices', {
+      headers: { 'Authorization': `Bearer ${accessToken}` },
+    });
+    const devices = devicesResp.data.devices || [];
+    if (!devices.length) {
+      return res.status(409).json({
+        ok: false,
+        code: 'NO_ACTIVE_DEVICE',
+        message: 'No active Spotify devices. Please open Spotify on one of your devices and start playing something once, then try again.',
+        details: { devices: [] }
+      });
+    }
+    // 2. Pick device: prefer active, else first Computer, else first
+    let chosen = devices.find((d: { is_active: any; }) => d.is_active) || devices.find((d: { type: string; }) => d.type === 'Computer') || devices[0];
+    // 3. Start playback
+    const playBody = {
+      context_uri: `spotify:playlist:${playlistId}`
+    };
+    try {
+      await axios.put(`https://api.spotify.com/v1/me/player/play?device_id=${chosen.id}`,
+        playBody,
+        { headers: { 'Authorization': `Bearer ${accessToken}` } }
+      );
+      return res.json({ ok: true, device: chosen });
+    } catch (err: any) {
+      // Handle NO_ACTIVE_DEVICE error from Spotify
+      const status = err.response?.status || 500;
+      const reason = err.response?.data?.error?.reason;
+      if (status === 404 && reason === 'NO_ACTIVE_DEVICE') {
+        return res.status(409).json({
+          ok: false,
+          code: 'NO_ACTIVE_DEVICE',
+          message: 'No active Spotify devices. Please open Spotify and start playing something once, then try again.',
+          details: { devices }
+        });
+      }
+      // Other errors
+      return res.status(status).json({
+        ok: false,
+        code: 'UNEXPECTED_ERROR',
+        message: 'Failed to start playback.',
+        details: err.response?.data || { message: err.message }
+      });
+    }
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    return res.status(status).json({
+      ok: false,
+      code: 'UNEXPECTED_ERROR',
+      message: 'Failed to start playback.',
+      details: error.response?.data || { message: error.message }
+    });
+  }
+});
+// GET /api/spotify/devices - List user's Spotify devices
+app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, async (req: Request, res: Response) => {
+  const correlationId = (req as any).correlationId;
+  const accessToken = (req as any).accessToken;
+  try {
+    const response = await axios.get('https://api.spotify.com/v1/me/player/devices', {
+      headers: {
+        'Authorization': `Bearer ${accessToken}`,
+      },
+    });
+    const devices = response.data.devices || [];
+    res.json({ ok: true, devices });
+  } catch (error: any) {
+    const status = error.response?.status || 500;
+    const details = error.response?.data || { message: error.message };
+    let code = 'UNEXPECTED_ERROR';
+    let message = 'Something went wrong talking to Spotify.';
+    if (status === 401) {
+      code = 'UNAUTHORIZED';
+      message = 'Spotify token is invalid or expired.';
+    }
+    res.status(status).json({ ok: false, code, message, details });
+  }
 });
 
 // Start server
