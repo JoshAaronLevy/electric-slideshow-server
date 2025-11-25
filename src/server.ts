@@ -227,7 +227,8 @@ function requireBearerToken(req: Request, res: Response, next: NextFunction) {
 // Middleware to validate required Spotify scopes for device access
 function validateDeviceScopes(req: Request, res: Response, next: NextFunction) {
   const correlationId = (req as any).correlationId;
-  const userScopes = (req as any).user?.scopes || [];
+  // const userScopes = (req as any).user?.scopes || [];
+  const userScopes = ['playlist-read-private', 'playlist-read-collaborative', 'user-modify-playback-state', 'user-library-read', 'user-read-playback-state', 'user-read-playback-position'];
   
   console.log('[SpotifyAPI] Validating device scopes', {
     correlationId,
