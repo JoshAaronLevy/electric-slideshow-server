@@ -589,7 +589,6 @@ app.get('/api/spotify/devices', authRateLimiter, requireBearerToken, validateDev
       status: response.status,
       deviceCount: response.data.devices?.length || 0,
       devices: response.data.devices || [],
-      data: response.data,
     });
     
     // Return standardized success response
