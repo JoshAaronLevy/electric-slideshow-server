@@ -1,0 +1,108 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="UTF-8" />
+    <title>Electric Slideshow Internal Player</title>
+    <style>
+      /* This UI is never shown; it's basically headless. */
+      body {
+        margin: 0;
+        padding: 0;
+        background: #000;
+        color: #fff;
+        font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+        font-size: 12px;
+      }
+    </style>
+    <script src="https://sdk.scdn.co/spotify-player.js"></script>
+  </head>
+  <body>
+    <script>
+      // ------------------------------------------------------------
+      // JS ↔ Swift bridge helper
+      // ------------------------------------------------------------
+      function postPlayerEvent(evt) {
+        try {
+          window.webkit.messageHandlers.playerEvent.postMessage(evt);
+        } catch (e) {
+          console.error("Failed to post playerEvent", e);
+        }
+      }
+
+      // ------------------------------------------------------------
+      // INTERNAL_PLAYER API skeleton
+      // ------------------------------------------------------------
+      window.INTERNAL_PLAYER = {
+        _accessToken: null,
+
+        setAccessToken(token) {
+          this._accessToken = token;
+          console.log("[INTERNAL_PLAYER] setAccessToken", token ? "(received token)" : "(empty)");
+          postPlayerEvent({
+            type: "stateChanged",
+            message: "Access token set",
+          });
+        },
+
+        play() {
+          console.log("[INTERNAL_PLAYER] play()");
+          postPlayerEvent({
+            type: "stateChanged",
+            message: "play() called",
+          });
+        },
+
+        pause() {
+          console.log("[INTERNAL_PLAYER] pause()");
+          postPlayerEvent({
+            type: "stateChanged",
+            message: "pause() called",
+          });
+        },
+
+        next() {
+          console.log("[INTERNAL_PLAYER] next()");
+          postPlayerEvent({
+            type: "stateChanged",
+            message: "next() called",
+          });
+        },
+
+        previous() {
+          console.log("[INTERNAL_PLAYER] previous()");
+          postPlayerEvent({
+            type: "stateChanged",
+            message: "previous() called",
+          });
+        },
+
+        seek(ms) {
+          console.log("[INTERNAL_PLAYER] seek()", ms);
+          postPlayerEvent({
+            type: "stateChanged",
+            message: "seek(" + ms + ") called",
+          });
+        },
+
+        setVolume(value) {
+          console.log("[INTERNAL_PLAYER] setVolume()", value);
+          postPlayerEvent({
+            type: "stateChanged",
+            message: "setVolume(" + value + ") called",
+          });
+        },
+      };
+
+      // ------------------------------------------------------------
+      // Initial "ready" event – lets Swift know the HTML/JS loaded
+      // ------------------------------------------------------------
+      window.addEventListener("load", function () {
+        console.log("[INTERNAL_PLAYER] Skeleton loaded");
+        postPlayerEvent({
+          type: "ready",
+          message: "Internal player skeleton loaded",
+        });
+      });
+    </script>
+  </body>
+</html>
