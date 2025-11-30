@@ -6,6 +6,8 @@ import morgan from 'morgan';
 import rateLimit from 'express-rate-limit';
 import axios from 'axios';
 import { z } from 'zod';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
 // Validate required environment variables on boot
 const SPOTIFY_CLIENT_ID = process.env.SPOTIFY_CLIENT_ID;
@@ -27,7 +29,17 @@ app.set('trust proxy', 1);
 
 // Security middleware
 app.use(helmet({
-  crossOriginResourcePolicy: { policy: 'cross-origin' }
+  crossOriginResourcePolicy: { policy: 'cross-origin' },
+  contentSecurityPolicy: {
+    useDefaults: true,
+    directives: {
+      // Allow scripts from self + Spotify SDK + inline script in internal_player.html
+      "script-src": ["'self'", "https://sdk.scdn.co", "'unsafe-inline'"],
+      // Optional but nice: tighten where the page can connect.
+      // Add Spotify API + SDK if you want to be safe for the actual Web Playback SDK later:
+      "connect-src": ["'self'", "https://api.spotify.com", "https://sdk.scdn.co"],
+    },
+  }
 }));
 
 // Logging (only in development)
@@ -66,6 +78,9 @@ const corsOptions: cors.CorsOptions = {
 };
 
 app.use(cors(corsOptions));
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
 
 // Body parsing
 app.use(express.json());
@@ -161,6 +176,19 @@ async function spotifyToken(params: URLSearchParams): Promise<any> {
 // Health check endpoint
 app.get('/healthz', (_req: Request, res: Response) => {
   res.json({ ok: true });
+});
+
+// Internal Spotify Web Playback HTML
+app.get('/internal-player', (_req: Request, res: Response) => {
+  const filePath = path.join(__dirname, '../public/internal_player.html');
+  res.sendFile(filePath, err => {
+    if (err) {
+      console.error('[InternalPlayer] Failed to send internal_player.html', err);
+      if (!res.headersSent) {
+        res.status(500).send('Internal player file not found');
+      }
+    }
+  });
 });
 
 // Zod schemas for request validation
