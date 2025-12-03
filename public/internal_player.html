@@ -1,0 +1,256 @@
+<!doctype html>
+<html>
+
+<head>
+  <meta charset="UTF-8" />
+  <title>Electric Slideshow Internal Player</title>
+  <style>
+    /* This UI is never shown; it's basically headless. */
+    body {
+      margin: 0;
+      padding: 0;
+      background: #000;
+      color: #fff;
+      font-family: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+      font-size: 12px;
+    }
+  </style>
+  <script src="https://sdk.scdn.co/spotify-player.js"></script>
+</head>
+
+<body>
+  <script>
+    // ------------------------------------------------------------
+    // JS ↔ Swift bridge helper
+    // ------------------------------------------------------------
+    function postPlayerEvent(evt) {
+      try {
+        if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.playerEvent) {
+          window.webkit.messageHandlers.playerEvent.postMessage(evt);
+        } else {
+          // In normal browsers (Chrome, etc.) there is no window.webkit;
+          // just log so we can debug without crashing.
+          console.log("[INTERNAL_PLAYER] (no webkit bridge) event:", evt);
+        }
+      } catch (e) {
+        console.error("[INTERNAL_PLAYER] Failed to post playerEvent", e);
+      }
+    }
+
+    // ------------------------------------------------------------
+    // INTERNAL_PLAYER API + Spotify Web Playback SDK integration
+    // ------------------------------------------------------------
+    window.INTERNAL_PLAYER = {
+      _accessToken: null,
+      _player: null,
+      _sdkReady: false,
+
+      // Called from Swift (via WKWebView)
+      setAccessToken(token) {
+        this._accessToken = token;
+        console.log("[INTERNAL_PLAYER] setAccessToken (received token)");
+        postPlayerEvent({
+          type: "tokenUpdated",
+          message: "Access token set in INTERNAL_PLAYER"
+        });
+        this._maybeCreatePlayer();
+      },
+
+      play() {
+        const p = this._player;
+        if (!p) {
+          console.warn("[INTERNAL_PLAYER] play() called but player not ready yet");
+          return;
+        }
+        p.resume().catch(err => {
+          console.error("[INTERNAL_PLAYER] play() failed", err);
+          postPlayerEvent({ type: "error", code: "play_failed", message: String(err) });
+        });
+      },
+
+      pause() {
+        const p = this._player;
+        if (!p) return;
+        p.pause().catch(err => {
+          console.error("[INTERNAL_PLAYER] pause() failed", err);
+          postPlayerEvent({ type: "error", code: "pause_failed", message: String(err) });
+        });
+      },
+
+      next() {
+        const p = this._player;
+        if (!p) return;
+        p.nextTrack().catch(err => {
+          console.error("[INTERNAL_PLAYER] next() failed", err);
+          postPlayerEvent({ type: "error", code: "next_failed", message: String(err) });
+        });
+      },
+
+      previous() {
+        const p = this._player;
+        if (!p) return;
+        p.previousTrack().catch(err => {
+          console.error("[INTERNAL_PLAYER] previous() failed", err);
+          postPlayerEvent({ type: "error", code: "previous_failed", message: String(err) });
+        });
+      },
+
+      seek(ms) {
+        const p = this._player;
+        if (!p) return;
+        p.seek(ms).catch(err => {
+          console.error("[INTERNAL_PLAYER] seek() failed", err);
+          postPlayerEvent({ type: "error", code: "seek_failed", message: String(err) });
+        });
+      },
+
+      setVolume(value) {
+        const p = this._player;
+        if (!p) return;
+        p.setVolume(value).catch(err => {
+          console.error("[INTERNAL_PLAYER] setVolume() failed", err);
+          postPlayerEvent({ type: "error", code: "volume_failed", message: String(err) });
+        });
+      },
+
+      // --------------------------------------------------------
+      // Internal: create the Spotify.Player instance
+      // --------------------------------------------------------
+      _maybeCreatePlayer() {
+        if (!this._sdkReady) {
+          console.log("[INTERNAL_PLAYER] _maybeCreatePlayer: SDK not ready yet");
+          return;
+        }
+        if (!this._accessToken) {
+          console.log("[INTERNAL_PLAYER] _maybeCreatePlayer: no access token yet");
+          return;
+        }
+        if (this._player) {
+          // Already created
+          return;
+        }
+
+        if (!window.Spotify || !window.Spotify.Player) {
+          console.error("[INTERNAL_PLAYER] Spotify SDK not available on window.Spotify");
+          return;
+        }
+
+        console.log("[INTERNAL_PLAYER] Creating Spotify.Player instance");
+        const player = new Spotify.Player({
+          name: "Electric Slideshow Internal Player",
+          getOAuthToken: cb => {
+            if (this._accessToken) {
+              cb(this._accessToken);
+            } else {
+              console.warn("[INTERNAL_PLAYER] getOAuthToken called but no token set");
+            }
+          },
+          volume: 0.8
+        });
+
+        // Ready
+        player.addListener("ready", ({ device_id }) => {
+          console.log("[INTERNAL_PLAYER] Player READY with Device ID", device_id);
+          postPlayerEvent({
+            type: "ready",
+            deviceId: device_id
+          });
+        });
+
+        // Not ready
+        player.addListener("not_ready", ({ device_id }) => {
+          console.log("[INTERNAL_PLAYER] Player NOT READY, Device ID", device_id);
+          postPlayerEvent({
+            type: "notReady",
+            deviceId: device_id
+          });
+        });
+
+        // Playback state updates
+        player.addListener("player_state_changed", state => {
+          if (!state) {
+            return;
+          }
+          const track = state.track_window?.current_track;
+          const artists = track?.artists || [];
+          const artistName = artists.length > 0 ? artists[0].name : null;
+
+          const payload = {
+            type: "stateChanged",
+            isPlaying: !state.paused,
+            positionMs: state.position,
+            durationMs: track?.duration_ms ?? 0,
+            trackUri: track?.uri ?? null,
+            trackName: track?.name ?? null,
+            artistName
+          };
+
+          console.log("[INTERNAL_PLAYER] player_state_changed", payload);
+          postPlayerEvent(payload);
+        });
+
+        // Error handlers
+        player.addListener("initialization_error", ({ message }) => {
+          console.error("[INTERNAL_PLAYER] initialization_error", message);
+          postPlayerEvent({
+            type: "error",
+            code: "initialization_error",
+            message
+          });
+        });
+
+        player.addListener("authentication_error", ({ message }) => {
+          console.error("[INTERNAL_PLAYER] authentication_error", message);
+          postPlayerEvent({
+            type: "error",
+            code: "authentication_error",
+            message
+          });
+        });
+
+        player.addListener("account_error", ({ message }) => {
+          console.error("[INTERNAL_PLAYER] account_error", message);
+          postPlayerEvent({
+            type: "error",
+            code: "account_error",
+            message
+          });
+        });
+
+        player.addListener("playback_error", ({ message }) => {
+          console.error("[INTERNAL_PLAYER] playback_error", message);
+          postPlayerEvent({
+            type: "error",
+            code: "playback_error",
+            message
+          });
+        });
+
+        player.connect();
+        this._player = player;
+      }
+    };
+
+    // ------------------------------------------------------------
+    // Spotify Web Playback SDK entry point
+    // ------------------------------------------------------------
+    window.onSpotifyWebPlaybackSDKReady = () => {
+      console.log("[INTERNAL_PLAYER] Spotify Web Playback SDK loaded");
+      INTERNAL_PLAYER._sdkReady = true;
+      INTERNAL_PLAYER._maybeCreatePlayer();
+    };
+
+    // ------------------------------------------------------------
+    // Initial "htmlLoaded" event – lets Swift know HTML is up
+    // ------------------------------------------------------------
+    window.addEventListener("load", function () {
+      console.log("[INTERNAL_PLAYER] HTML loaded");
+      postPlayerEvent({
+        type: "htmlLoaded",
+        message: "Internal player HTML fully loaded"
+      });
+    });
+  </script>
+</body>
+
+</html>
