@@ -40,10 +40,26 @@
     // ------------------------------------------------------------
     // INTERNAL_PLAYER API + Spotify Web Playback SDK integration
     // ------------------------------------------------------------
+    async function detectWidevineSupport() {
+      if (typeof navigator === 'undefined' || typeof navigator.requestMediaKeySystemAccess !== 'function') {
+        throw new Error('navigator.requestMediaKeySystemAccess is unavailable in this environment');
+      }
+
+      const config = [{
+        initDataTypes: ['cenc'],
+        audioCapabilities: [{ contentType: 'audio/mp4; codecs="mp4a.40.2"' }]
+      }];
+
+      await navigator.requestMediaKeySystemAccess('com.widevine.alpha', config);
+    }
+
     window.INTERNAL_PLAYER = {
       _accessToken: null,
       _player: null,
       _sdkReady: false,
+      _drmSupported: null,
+      _drmCheckPromise: null,
+      _drmErrorReported: false,
 
       // Called from Swift (via WKWebView)
       setAccessToken(token) {
@@ -116,7 +132,7 @@
       // --------------------------------------------------------
       // Internal: create the Spotify.Player instance
       // --------------------------------------------------------
-      _maybeCreatePlayer() {
+      async _maybeCreatePlayer() {
         if (!this._sdkReady) {
           console.log("[INTERNAL_PLAYER] _maybeCreatePlayer: SDK not ready yet");
           return;
@@ -132,6 +148,12 @@
 
         if (!window.Spotify || !window.Spotify.Player) {
           console.error("[INTERNAL_PLAYER] Spotify SDK not available on window.Spotify");
+          return;
+        }
+
+        const drmReady = await this._ensureDrmSupport();
+        if (!drmReady) {
+          console.warn("[INTERNAL_PLAYER] DRM/Widevine unavailable – cannot create player");
           return;
         }
 
@@ -226,8 +248,66 @@
           });
         });
 
-        player.connect();
+        const connectPromise = player.connect();
+        if (connectPromise && typeof connectPromise.then === 'function') {
+          connectPromise.then(ok => {
+            const message = ok ? 'connected' : 'failed';
+            postPlayerEvent({ type: 'connectResult', message });
+            if (!ok) {
+              postPlayerEvent({
+                type: 'error',
+                code: 'connect_failed',
+                message: 'Spotify SDK connect() returned false. This usually indicates missing DRM support (Widevine).'
+              });
+            }
+          }).catch(err => {
+            console.error('[INTERNAL_PLAYER] connect() threw', err);
+            postPlayerEvent({ type: 'error', code: 'connect_exception', message: String(err) });
+          });
+        } else {
+          console.warn('[INTERNAL_PLAYER] connect() did not return a promise');
+        }
+
         this._player = player;
+      },
+
+      async _ensureDrmSupport() {
+        if (this._drmSupported === true) {
+          return true;
+        }
+        if (this._drmSupported === false && this._drmErrorReported) {
+          return false;
+        }
+
+        if (!this._drmCheckPromise) {
+          this._drmCheckPromise = (async () => {
+            try {
+              await detectWidevineSupport();
+              this._drmSupported = true;
+              return true;
+            } catch (err) {
+              console.error('[INTERNAL_PLAYER] Widevine check failed', err);
+              this._drmSupported = false;
+              throw err;
+            }
+          })();
+        }
+
+        try {
+          await this._drmCheckPromise;
+          return true;
+        } catch (err) {
+          if (!this._drmErrorReported) {
+            this._drmErrorReported = true;
+            const message = err && err.message ? err.message : 'Widevine DRM is unavailable in this web view';
+            postPlayerEvent({
+              type: 'error',
+              code: 'widevine_unavailable',
+              message
+            });
+          }
+          return false;
+        }
       }
     };
 

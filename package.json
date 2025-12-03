@@ -1,6 +1,6 @@
 {
   "name": "electric-slideshow-server",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "PKCE-only Spotify OAuth backend for the Electric Slideshow app",
   "main": "dist/server.js",
   "type": "module",

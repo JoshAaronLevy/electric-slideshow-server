@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2025-12-03
+
+### Fixed
+- Added Widevine/DRM detection inside `internal_player.html` and emit a `widevine_unavailable` error when WKWebView blocks DRM so the macOS app can fall back instantly.
+- Wrapped `Spotify.Player.connect()` with promise logging and `connectResult` events so Swift sees explicit success/failure instead of silent timeouts.
+- Improved error telemetry for connect exceptions to aid debugging when the SDK rejects the embedded player environment.
+
 ## [1.1.0] - 2025-11-06
 
 ### Added
