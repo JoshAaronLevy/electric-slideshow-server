@@ -152,6 +152,7 @@ const authRateLimiter = rateLimit({
 
 // Required Spotify scopes for playback and device control
 const SPOTIFY_SCOPES = [
+  'streaming',
   'user-read-playback-state',
   'user-modify-playback-state',
   'user-read-currently-playing',
